@@ -1,0 +1,14 @@
+[
+  {
+    "file_path": "/groups/gag51404/ide/PointLLM/data/qiu-san-data/input_pc_scannet_fps.ply",
+    "file_name": "input_pc_scannet_fps.ply",
+    "prompt": "What is this?",
+    "answer": "This is a 3D model of a cartoonish, white object that resembles a satellite. The object is distinctly marked with the word 'satellites' written across its body. Its design is playful and simplistic, making it suitable for children's animations or games. The object's color and wording suggest that it might be used to represent a particular type of satellite, possibly for educational purposes."
+  },
+  {
+    "file_path": "/groups/gag51404/ide/PointLLM/data/qiu-san-data/input_pc_sunrgbd_fps.ply",
+    "file_name": "input_pc_sunrgbd_fps.ply",
+    "prompt": "What is this?",
+    "answer": "This is a 3D model of a cartoon-like figure, predominantly white in color. The figure appears to be simple and abstract, with a minimalist design that could be appealing to a wide range of audiences, especially children. It could be used in various contexts, such as animations, video games, or as a teaching aid in educational materials. Despite its simplicity, the model seems to have a certain charm and personality, making it more than just a static representation."
+  }
+]
