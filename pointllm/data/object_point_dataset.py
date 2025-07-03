@@ -10,12 +10,24 @@ from torch.utils.data import Dataset
 
 from .utils import *
 
+# ランダム回転用のインポートを追加
+try:
+    from scipy.spatial.transform import Rotation as R
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+    print("Warning: scipy not available. Random rotation will be disabled.")
+
 
 def make_object_point_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args) -> Dict:
     """Make dataset and collator for Joint3Ddataset with text and point cloud data."""
     """Initialize datasets."""
 
     data_collator = DataCollatorForPointTextDataset(tokenizer=tokenizer)
+    
+    # data_argsからランダム回転の設定を取得
+    apply_random_rotation = getattr(data_args, 'apply_random_rotation', None)
+    
     if data_args.split_train_val:
         print("Loading training datasets.")
         train_dataset = ObjectPointCloudDataset(
@@ -26,7 +38,8 @@ def make_object_point_data_module(tokenizer: transformers.PreTrainedTokenizer, d
             conversation_types=data_args.conversation_types,
             tokenizer=tokenizer,
             use_color=data_args.use_color,
-            data_args=data_args
+            data_args=data_args,
+            apply_random_rotation=apply_random_rotation
         )
         print("Done!")
         if data_args.data_debug_num > 0:
@@ -43,7 +56,8 @@ def make_object_point_data_module(tokenizer: transformers.PreTrainedTokenizer, d
                 conversation_types=data_args.conversation_types,
                 tokenizer=tokenizer,
                 use_color=data_args.use_color,
-                data_args=data_args
+                data_args=data_args,
+                apply_random_rotation=apply_random_rotation
             )
         return dict(train_dataset=train_dataset, eval_dataset=val_dataset, data_collator=data_collator)
     else:
@@ -56,7 +70,8 @@ def make_object_point_data_module(tokenizer: transformers.PreTrainedTokenizer, d
             conversation_types=data_args.conversation_types,
             use_color=data_args.use_color,
             tokenizer=tokenizer,
-            data_args=data_args
+            data_args=data_args,
+            apply_random_rotation=apply_random_rotation
         )
         return dict(train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator)
 
@@ -70,13 +85,16 @@ class ObjectPointCloudDataset(Dataset):
                  split='train',
                  conversation_types=None, # * default is simple_des, used for stage1 pre-train
                  use_color=True,
-                 data_args=None):
+                 data_args=None,
+                 apply_random_rotation=None):  # 新しいパラメータを追加
 
         """
         split: only considered when data_args.split_train_val is True.
         conversation_types: tuple, used to filter the data, default is ('simple_description'), other types is:
             "detailed_description", "single_round", "multi_round".
         tokenizer: load point clouds only if None
+        apply_random_rotation: bool, if True apply random rotation for data augmentation.
+                              If None, defaults to True for training and False for evaluation.
         """
         super(ObjectPointCloudDataset, self).__init__()
 
@@ -94,6 +112,17 @@ class ObjectPointCloudDataset(Dataset):
         self.normalize_pc = True
         self.use_color = use_color
 
+        # ランダム回転の設定
+        if apply_random_rotation is None:
+            # デフォルト: 学習時はTrue、推論時はFalse
+            self.apply_random_rotation = (split == 'train')
+        else:
+            self.apply_random_rotation = apply_random_rotation
+            
+        if self.apply_random_rotation and not SCIPY_AVAILABLE:
+            print("Warning: scipy not available. Random rotation will be disabled.")
+            self.apply_random_rotation = False
+
         self.pointnum = pointnum
         self.point_backbone_config = data_args.point_backbone_config if data_args is not None else None
         self.point_indicator = '<point>'
@@ -105,6 +134,9 @@ class ObjectPointCloudDataset(Dataset):
         
         # * print the conversations_type
         print(f"Using conversation_type: {self.conversation_types}") 
+        # ランダム回転の設定を表示
+        print(f"Random rotation augmentation: {'Enabled' if self.apply_random_rotation else 'Disabled'}")
+        
         # * print before filtering
         print(f"Before filtering, the dataset size is: {len(self.list_data_dict)}.")
 
@@ -201,6 +233,31 @@ class ObjectPointCloudDataset(Dataset):
         pc = np.concatenate((xyz, other_feature), axis=1)
         return pc
     
+    def _apply_random_rotation_to_point_clouds(self, point_clouds_list):
+        """
+        複数の点群に同じランダム回転を適用
+        
+        Args:
+            point_clouds_list: list of numpy arrays, 各点群は (N, C) の形状
+            
+        Returns:
+            list of numpy arrays: 回転適用後の点群リスト
+        """
+        if not self.apply_random_rotation or not SCIPY_AVAILABLE:
+            return point_clouds_list
+            
+        # ランダムな回転行列を生成（3x3）
+        random_rotation_matrix = R.random().as_matrix()
+        
+        rotated_point_clouds = []
+        for pc in point_clouds_list:
+            pc_rotated = pc.copy()
+            # XYZ座標（最初の3次元）のみに回転を適用
+            pc_rotated[:, :3] = pc[:, :3] @ random_rotation_matrix
+            rotated_point_clouds.append(pc_rotated)
+            
+        return rotated_point_clouds
+
     def __getitem__(self, index):
         sources = self.list_data_dict[index]
         if isinstance(index, int):
@@ -219,11 +276,23 @@ class ObjectPointCloudDataset(Dataset):
             # --- 複数点群の読み込み処理を追加 ---
             if 'object_ids' in sources[0]: # 今回作成した新しいデータ形式
                 object_ids = sources[0]['object_ids']
+                
+                # まず全ての点群を読み込み、正規化
+                raw_point_clouds = []
                 for obj_id in object_ids:
                     pc = self._load_point_cloud(obj_id)
                     if self.normalize_pc:
                         pc = self.pc_norm(pc)
+                    raw_point_clouds.append(pc)
+                
+                # ★★★ ランダム回転を適用 ★★★
+                if self.apply_random_rotation:
+                    raw_point_clouds = self._apply_random_rotation_to_point_clouds(raw_point_clouds)
+                
+                # テンソルに変換
+                for pc in raw_point_clouds:
                     all_point_clouds.append(torch.from_numpy(pc.astype(np.float32)))
+                
                 # 複数の点群テンソルをリストとして保持
                 point_cloud = all_point_clouds
 
@@ -233,6 +302,11 @@ class ObjectPointCloudDataset(Dataset):
                 pc = self._load_point_cloud(object_id)
                 if self.normalize_pc:
                     pc = self.pc_norm(pc)
+                    
+                # 単一点群でもランダム回転を適用（Shape Matingではないが、一貫性のため）
+                if self.apply_random_rotation:
+                    pc = self._apply_random_rotation_to_point_clouds([pc])[0]
+                    
                 point_cloud = torch.from_numpy(pc.astype(np.float32))
             else:
                 raise ValueError("Sample is missing 'object_id' or 'object_ids' key.")
